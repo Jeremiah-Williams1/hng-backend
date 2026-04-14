@@ -42,7 +42,7 @@ func classify(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(ErrorResponse{
 			Status:  "error",
 			Message: "name query parameter is required",
@@ -93,7 +93,7 @@ func classify(w http.ResponseWriter, r *http.Request) {
 	if result.Gender == "" || result.Count == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusUnprocessableEntity)
 		json.NewEncoder(w).Encode(ErrorResponse{
 			Status:  "error",
 			Message: "No prediction available for the provided name",
