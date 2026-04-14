@@ -3,95 +3,120 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
 
-//  a simple note-taking API
-// // the api allows:
-// 1. POST /api/notes — create a note (learn reading request body)
-// 2. GET /api/notes — list all notes
-// 3. GET /api/notes/{id} — get one note (learn path params)
-// 4. DELETE /api/notes/{id} — delete a note
-
-// Have a struct for the post, i.e what are we expecting
-type NoteInput struct {
-	Message string `json:"message"`
+type GenderAPIResponse struct {
+	Gender      string  `json:"gender"`
+	Probability float64 `json:"probability"`
+	Count       int     `json:"count"`
 }
 
-// Data we're storing or sending back it's struct
-type Note struct {
-	ID        string `json:"id"`
-	Message   string `json:"message"`
-	CreatedAt string `json:"created_at"`
+// Our Server Response
+type ServerResponse struct {
+	Name          string  `json:"name"`
+	Gender        string  `json:"gender"`
+	Probability   float64 `json:"probability"`
+	Count         int     `json:"sample_size"`
+	Confidence    bool    `json:"is_confident"`
+	ProcessedTime string  `json:"processed_at"`
 }
 
-// the error messag and response wrapper
+type SuccessResponse struct {
+	Status string         `json:"status"`
+	Data   ServerResponse `json:"data"`
+}
+
 type ErrorResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
 }
 
-type SuccessResponse struct {
-	Status string `json:"status"`
-	Data   any    `json:"data"`
-}
+func classify(w http.ResponseWriter, r *http.Request) {
+	// Get the request from our client
+	name := r.URL.Query().Get("name")
 
-var notes = map[string]Note{}
+	// validate that name isn't empty
+	if name == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Status:  "error",
+			Message: "name query parameter is required",
+		})
+		return
+	}
 
-func CollectNote(w http.ResponseWriter, r *http.Request) {
-	var note NoteInput
-	err := json.NewDecoder(r.Body).Decode(&note)
+	// Create the Client Object
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
 
+	// make the request
+	url := fmt.Sprintf("https://api.genderize.io/?name=%s", name)
+	resp, err := client.Get(url)
 	if err != nil {
+		// This catches network errors (e.g., server is down)
+		fmt.Printf("Failed to reach server: %v\n", err)
+		return
+	}
+
+	// close the connection
+	defer resp.Body.Close()
+
+	// Additional check
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Server returned an error: %d\n", resp.StatusCode)
+		return
+	}
+
+	//read the response body
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Printf("Failed to read response: %v\n", err)
+		return
+	}
+
+	// 6. Unmarshal (The Go version of json.loads)
+	var result GenderAPIResponse
+
+	err = json.Unmarshal(bodyBytes, &result)
+	if err != nil {
+		fmt.Printf("Failed to parse JSON: %v\n", err)
+		return
+	}
+
+	// OUR LOGIC
+	if result.Gender == "" || result.Count == 0 {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(ErrorResponse{
 			Status:  "error",
-			Message: err.Error(),
+			Message: "No prediction available for the provided name",
 		})
 		return
 	}
 
-	if note.Message == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{
-			Status:  "error",
-			Message: "No content found in the Post",
-		})
-		return
+	// the confidences score
+	response := ServerResponse{
+		Name:          name,
+		Gender:        result.Gender,
+		Probability:   result.Probability,
+		Count:         result.Count,
+		ProcessedTime: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	var ter Note
-
-	id := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	ter.ID = id
-	ter.Message = note.Message
-	ter.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	notes[ter.ID] = ter
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(SuccessResponse{
-		Status: "success",
-		Data:   ter,
-	})
-}
-
-func GetAllNote(w http.ResponseWriter, r *http.Request) {
-	// Have your response variable decleared, it should be a list of notes
-	allnotes := make([]Note, 0)
-
-	// loop through the notes and append the note to the variable declared above
-	for _, v := range notes {
-		allnotes = append(allnotes, v)
+	if response.Probability >= 0.7 && response.Count >= 100 {
+		response.Confidence = true
 	}
 
-	//set header
+	// Set header for our response
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Status Code
 	w.WriteHeader(http.StatusOK)
@@ -99,69 +124,7 @@ func GetAllNote(w http.ResponseWriter, r *http.Request) {
 	// write the respons back to our Client
 	json.NewEncoder(w).Encode(SuccessResponse{
 		Status: "success",
-		Data:   allnotes,
-	})
-
-}
-
-func GetSingleNote(w http.ResponseWriter, r *http.Request) {
-	// get the ID
-	id := r.PathValue("id")
-
-	// check if it's in the note if no return Error
-	val, ok := notes[id]
-	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResponse{
-			Status:  "error",
-			Message: "Note with that ID isn't available",
-		})
-		return
-	}
-	// set header
-	w.Header().Set("Content-Type", "application/json")
-
-	// set Status
-	w.WriteHeader(http.StatusOK)
-
-	// encode and send response back
-	json.NewEncoder(w).Encode(SuccessResponse{
-		Status: "success",
-		Data:   val,
-	})
-
-}
-
-func DeleteSingleNote(w http.ResponseWriter, r *http.Request) {
-	// get the id
-	id := r.PathValue("id")
-
-	// check if that id is in the notes
-	_, ok := notes[id]
-	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(ErrorResponse{
-			Status:  "error",
-			Message: "Note with that ID isn't available",
-		})
-		return
-	}
-
-	// Delete id from notes
-	delete(notes, id)
-
-	// set header
-	w.Header().Set("Content-Type", "application/json")
-
-	// set Status
-	w.WriteHeader(http.StatusOK)
-
-	// encode and send response back
-	json.NewEncoder(w).Encode(SuccessResponse{
-		Status: "success",
-		Data:   fmt.Sprintf("Note with id %v was deleted successfully", id),
+		Data:   response,
 	})
 
 }
@@ -169,10 +132,7 @@ func DeleteSingleNote(w http.ResponseWriter, r *http.Request) {
 func main() {
 	// Handler and Routing
 	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /api/notes/{id}", DeleteSingleNote)
-	mux.HandleFunc("GET /api/notes/{id}", GetSingleNote)
-	mux.HandleFunc("GET /api/notes", GetAllNote)
-	mux.HandleFunc("POST /api/notes", CollectNote)
+	mux.HandleFunc("/api/classify", classify)
 
 	// Server
 	srv := http.Server{
